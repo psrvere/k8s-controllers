@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 
+	"github.com/psrvere/k8s-controllers/auto-scaler/controllers"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -42,7 +43,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: Add reconciler
+	if err = (&controllers.DeploymentReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Deployment")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to setup health check")
