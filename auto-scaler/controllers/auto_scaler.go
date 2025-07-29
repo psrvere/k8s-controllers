@@ -162,7 +162,7 @@ func (r *DeploymentReconciler) scaleDeployment(ctx context.Context, deployment *
 
 func (r *DeploymentReconciler) isInCooldown(deploymentName string) bool {
 	r.mutex.RLock()
-	defer r.mutex.Unlock()
+	defer r.mutex.RUnlock()
 
 	if r.logCache == nil {
 		return false
