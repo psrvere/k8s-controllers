@@ -20,6 +20,11 @@ type PodReconciler struct {
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
+	// Skip system namespaces
+	if isSystemNamespace(req.Namespace) {
+		return ctrl.Result{}, nil
+	}
+
 	// Fetch the Pod
 	pod := &corev1.Pod{}
 	err := r.Get(ctx, req.NamespacedName, pod)
@@ -75,6 +80,7 @@ func (r *PodReconciler) addLabelsToPod(ctx context.Context, pod *corev1.Pod) err
 	return r.Update(ctx, podCopy)
 }
 
+// generateLabels creates labels based on Pod Metadata
 func generateLabels(pod *corev1.Pod) map[string]string {
 	labels := make(map[string]string)
 
@@ -95,6 +101,21 @@ func generateLabels(pod *corev1.Pod) map[string]string {
 	labels["pod-labeller/processed"] = "true"
 
 	return labels
+}
+
+func isSystemNamespace(namespace string) bool {
+	systemNamespaces := []string{
+		"kube-system",
+		"kube-public",
+		"kube-node-lease",
+	}
+
+	for _, sn := range systemNamespaces {
+		if namespace == sn {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
