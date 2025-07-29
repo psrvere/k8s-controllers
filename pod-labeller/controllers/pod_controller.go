@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"context"
+	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -14,7 +16,9 @@ import (
 // PodReconciler reconciles a Pod Object
 type PodReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	mutex    sync.RWMutex
+	logCache map[string]time.Time
 }
 
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -41,7 +45,10 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	// Wait for Pod to be ready before adding labels
 	if !isPodReady(pod) {
-		log.Info("Pod not ready yet, will retry", "pod", pod.Name, "phase", pod.Status.Phase)
+		// Only log once per 5 seconds for the same Pod
+		if r.shouldLogPodNotReady(pod.Name) {
+			log.Info("Pod not ready yet, will retry", "pod", pod.Name, "phase", pod.Status.Phase)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -190,6 +197,24 @@ func isPodReady(pod *corev1.Pod) bool {
 		if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
 			return true
 		}
+	}
+	return false
+}
+
+func (r *PodReconciler) shouldLogPodNotReady(podName string) bool {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	if r.logCache == nil {
+		r.logCache = make(map[string]time.Time)
+	}
+
+	now := time.Now()
+	lastLog, exists := r.logCache[podName]
+
+	if !exists || now.Sub(lastLog) > 5*time.Second {
+		r.logCache[podName] = now
+		return true
 	}
 	return false
 }
