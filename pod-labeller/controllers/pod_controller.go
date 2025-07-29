@@ -94,7 +94,12 @@ func generateLabels(pod *corev1.Pod) map[string]string {
 
 	// Add image label if container exist
 	if len(pod.Spec.Containers) > 0 {
-		labels["image"] = pod.Spec.Containers[0].Image
+		image := pod.Spec.Containers[0].Image
+		// sanitize image name
+		sanitizedImage := sanitizeLabelValue(image)
+		if sanitizedImage != "" {
+			labels["image"] = sanitizedImage
+		}
 	}
 
 	// Add custom label to mark this Pod as processed by this controller
@@ -116,6 +121,52 @@ func isSystemNamespace(namespace string) bool {
 		}
 	}
 	return false
+}
+
+// sanitizeLabelValu converts an image name to a valid label value
+func sanitizeLabelValue(value string) string {
+	// Replace invalid characters with valid ones
+	result := ""
+	for _, char := range value {
+		switch {
+		case (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9'):
+			result += string(char)
+		case char == '/' || char == ':':
+			result += "-"
+		case char == '_' || char == '.' || char == '-':
+			result += string(char)
+		default:
+			result += "-"
+		}
+	}
+
+	if len(result) == 0 {
+		return "img"
+	}
+
+	// Ensure it starts with alphanumric
+	if !isAlphanumeric(rune(result[0])) {
+		result = "img-" + result
+		// Check if limit is exceeded after adding prefix
+		if len(result) > 63 {
+			result = result[:63]
+		}
+	}
+
+	// Ensure it ends with alphanumeric
+	if !isAlphanumeric(rune(result[len(result)-1])) {
+		// Check if limit will be exceeded after adding suffix
+		if len(result)+4 > 63 {
+			result = result[:59]
+		}
+		result = result + "-img"
+	}
+
+	return result
+}
+
+func isAlphanumeric(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 }
 
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
