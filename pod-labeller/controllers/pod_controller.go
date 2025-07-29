@@ -31,10 +31,12 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Pod not found, probably deleted
-			return ctrl.Result{}, err
+			log.Info("Pod not found. Skipping reconciliation", "pod", req.Name, "error", err)
+			return ctrl.Result{}, nil
 		}
 		// Error reading the object - requeue the request
-		return ctrl.Result{}, err
+		log.Info("Failed to get Pod. Skipping reconciliation", "pod", req.Name, "error", err)
+		return ctrl.Result{}, nil
 	}
 
 	// Check if pod already has our labels
@@ -113,6 +115,7 @@ func isSystemNamespace(namespace string) bool {
 		"kube-system",
 		"kube-public",
 		"kube-node-lease",
+		"local-path-storage",
 	}
 
 	for _, sn := range systemNamespaces {
