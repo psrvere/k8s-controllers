@@ -1,0 +1,1 @@
+Deployment Scaler Based on Labels: Develop a controller that watches Deployments with a specific label and scales replicas up or down based on a simple threshold, like CPU usage from metrics (using fake data initially). This is similar to basic auto-scaling in production web services without relying on HPA.
