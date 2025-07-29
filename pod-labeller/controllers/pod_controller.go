@@ -39,6 +39,12 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	// Wait for Pod to be ready before adding labels
+	if !isPodReady(pod) {
+		log.Info("Pod not ready yet, will retry", "pod", pod.Name, "phase", pod.Status.Phase)
+		return ctrl.Result{}, nil
+	}
+
 	// Check if pod already has our labels
 	if hasRequiredLables(pod) {
 		log.Info("Pod already has required labels", "pod", pod.Name)
@@ -170,6 +176,22 @@ func sanitizeLabelValue(value string) string {
 
 func isAlphanumeric(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+}
+
+// isPodReady checks if the Pod is ready for labelling
+func isPodReady(pod *corev1.Pod) bool {
+	// Wait for Pod to be in Running phase
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+
+	// Wait for all containers to be ready
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
