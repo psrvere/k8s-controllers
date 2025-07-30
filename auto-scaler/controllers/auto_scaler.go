@@ -2,16 +2,20 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 type DeploymentReconciler struct {
@@ -32,7 +36,7 @@ const (
 
 	MaxReplicas = 10
 
-	ScalingCooldown = 10 * time.Second
+	ScalingCooldown = 20 * time.Second
 )
 
 func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -65,7 +69,13 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Check if deployment is ready
 	if !isDeploymentReady(deployment) {
 		log.Info("Deployment not ready yet, will retry", "deployment", deployment.Name)
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: ScalingCooldown}, nil
+	}
+
+	// Check if we are in cooldown period
+	if r.isInCooldown(deployment.Name) {
+		log.Info("In cooldown. Skipping Scaling")
+		return ctrl.Result{RequeueAfter: ScalingCooldown}, nil
 	}
 
 	// get fake CPU usage for the deployment
@@ -73,10 +83,9 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	log.Info("Current CPU usage", "deployment", deployment.Name, "cpu", cpuUsage)
 
 	// Check if scaling is needed
-	shouldScale, newReplicas := r.shouldScale(deployment, cpuUsage)
+	shouldScale, newReplicas := r.shouldScale(deployment, cpuUsage, log)
 	if !shouldScale {
-		log.Info("No scaling needed", "deployment", deployment.Name, "cpu", cpuUsage)
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: ScalingCooldown}, nil
 	}
 
 	// Perform scaling
@@ -86,7 +95,7 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	log.Info("Successfully scaled deployment", "deployment", deployment.Name, "replicas", newReplicas)
-	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: ScalingCooldown}, nil
 }
 
 func hasAutoScaleLabel(deployment *appsv1.Deployment) bool {
@@ -99,10 +108,6 @@ func hasAutoScaleLabel(deployment *appsv1.Deployment) bool {
 
 func isDeploymentReady(deployment *appsv1.Deployment) bool {
 	if deployment.Status.ReadyReplicas == 0 {
-		return false
-	}
-
-	if deployment.Status.ReadyReplicas != *deployment.Spec.Replicas {
 		return false
 	}
 	return true
@@ -128,17 +133,13 @@ func (r *DeploymentReconciler) getFakeCPUUsage() float64 {
 	return rand.Float64()*80 + 10 // CPU usafe between 10-90%
 }
 
-func (r *DeploymentReconciler) shouldScale(deployment *appsv1.Deployment, cpuUsage float64) (bool, int32) {
+func (r *DeploymentReconciler) shouldScale(deployment *appsv1.Deployment, cpuUsage float64, log logr.Logger) (bool, int32) {
 	currentReplicas := *deployment.Spec.Replicas
-
-	// Check if we are in cooldown period
-	if r.isInCooldown(deployment.Name) {
-		return false, currentReplicas
-	}
 
 	// scale up if CPU usage is high
 	if cpuUsage > CPUThresholdHigh && currentReplicas < MaxReplicas {
 		newReplicas := currentReplicas + 1
+		log.Info("Scaling up", "deployment", deployment.Name, "from", currentReplicas, "to", newReplicas)
 		r.setCoolDown(deployment.Name)
 		return true, newReplicas
 	}
@@ -146,16 +147,18 @@ func (r *DeploymentReconciler) shouldScale(deployment *appsv1.Deployment, cpuUsa
 	// scale down if CPU usage is low
 	if cpuUsage < CPUThresholdLow && currentReplicas > MinReplicas {
 		newReplicas := currentReplicas - 1
+		log.Info("Scaling down", "deployment", deployment.Name, "from", currentReplicas, "to", newReplicas)
 		r.setCoolDown(deployment.Name)
 		return true, newReplicas
 	}
 
+	log.Info("None conditions matched")
 	return false, currentReplicas
 }
 
 func (r *DeploymentReconciler) scaleDeployment(ctx context.Context, deployment *appsv1.Deployment, newReplicas int32) error {
 	deploymentCopy := deployment.DeepCopy()
-	deployment.Spec.Replicas = &newReplicas
+	deploymentCopy.Spec.Replicas = &newReplicas
 
 	return r.Update(ctx, deploymentCopy)
 }
@@ -190,5 +193,72 @@ func (r *DeploymentReconciler) setCoolDown(deploymentName string) {
 func (r *DeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&appsv1.Deployment{}).
+		WithEventFilter(predicate.Funcs{
+			CreateFunc: func(e event.CreateEvent) bool {
+				log := log.FromContext(context.Background())
+				log.Info("Event: Deployment created",
+					"name", e.Object.GetName(),
+					"namespace", e.Object.GetNamespace(),
+					"resourceVersion", e.Object.GetResourceVersion())
+				return true
+			},
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				log := log.FromContext(context.Background())
+
+				// Get the old and new deployment objects
+				oldDeployment, ok := e.ObjectOld.(*appsv1.Deployment)
+				newDeployment, ok2 := e.ObjectNew.(*appsv1.Deployment)
+
+				if ok && ok2 {
+					// Check what changed
+					var changes []string
+
+					if oldDeployment.Spec.Replicas != nil && newDeployment.Spec.Replicas != nil {
+						if *oldDeployment.Spec.Replicas != *newDeployment.Spec.Replicas {
+							changes = append(changes, fmt.Sprintf("replicas: %d -> %d",
+								*oldDeployment.Spec.Replicas, *newDeployment.Spec.Replicas))
+						}
+					}
+
+					if oldDeployment.Status.ReadyReplicas != newDeployment.Status.ReadyReplicas {
+						changes = append(changes, fmt.Sprintf("readyReplicas: %d -> %d",
+							oldDeployment.Status.ReadyReplicas, newDeployment.Status.ReadyReplicas))
+					}
+
+					if oldDeployment.Status.AvailableReplicas != newDeployment.Status.AvailableReplicas {
+						changes = append(changes, fmt.Sprintf("availableReplicas: %d -> %d",
+							oldDeployment.Status.AvailableReplicas, newDeployment.Status.AvailableReplicas))
+					}
+
+					if oldDeployment.Status.UpdatedReplicas != newDeployment.Status.UpdatedReplicas {
+						changes = append(changes, fmt.Sprintf("updatedReplicas: %d -> %d",
+							oldDeployment.Status.UpdatedReplicas, newDeployment.Status.UpdatedReplicas))
+					}
+
+					if len(changes) > 0 {
+						log.Info("Event: Deployment updated",
+							"name", newDeployment.Name,
+							"namespace", newDeployment.Namespace,
+							"changes", changes,
+							"resourceVersion", newDeployment.GetResourceVersion())
+					} else {
+						log.Info("Event: Deployment updated (no significant changes)",
+							"name", newDeployment.Name,
+							"namespace", newDeployment.Namespace,
+							"resourceVersion", newDeployment.GetResourceVersion())
+					}
+				}
+
+				return true
+			},
+			DeleteFunc: func(e event.DeleteEvent) bool {
+				log := log.FromContext(context.Background())
+				log.Info("Event: Deployment deleted",
+					"name", e.Object.GetName(),
+					"namespace", e.Object.GetNamespace(),
+					"resourceVersion", e.Object.GetResourceVersion())
+				return true
+			},
+		}).
 		Complete(r)
 }
