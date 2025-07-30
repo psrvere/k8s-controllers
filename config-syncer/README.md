@@ -145,3 +145,9 @@ for _, targetNamespace := range targetNamespaces {
     r.syncConfigMap(ctx, configMap, targetNamespace, log)
 }
 ```
+
+### Q: What's the difference between search_replace and edit_file for code changes in Cursor?
+**A:** 
+- **search_replace**: More efficient for small, targeted changes (fewer tokens)
+- **edit_file**: Better for substantial changes across multiple sections
+- **Best practice**: Use search_replace for simple text replacements, edit_file for complex changes
