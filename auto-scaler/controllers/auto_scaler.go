@@ -16,23 +16,23 @@ import (
 
 type DeploymentReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	mutex    sync.RWMutex
-	logCache map[string]time.Time
+	Scheme        *runtime.Scheme
+	mutex         sync.RWMutex
+	cooldownCache map[string]time.Time
 }
 
 const (
 	AutoScaleLabel = "auto-scaler/enabled"
 
-	CPUThresholdHigh = 80.0
+	CPUThresholdHigh = 60.0
 
-	CPUThresholdLow = 20.0
+	CPUThresholdLow = 40.0
 
 	MinReplicas = 1
 
 	MaxReplicas = 10
 
-	ScalingCooldown = 30 * time.Second
+	ScalingCooldown = 10 * time.Second
 )
 
 func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -76,7 +76,7 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	shouldScale, newReplicas := r.shouldScale(deployment, cpuUsage)
 	if !shouldScale {
 		log.Info("No scaling needed", "deployment", deployment.Name, "cpu", cpuUsage)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
 	// Perform scaling
@@ -86,7 +86,7 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	log.Info("Successfully scaled deployment", "deployment", deployment.Name, "replicas", newReplicas)
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 }
 
 func hasAutoScaleLabel(deployment *appsv1.Deployment) bool {
@@ -164,11 +164,11 @@ func (r *DeploymentReconciler) isInCooldown(deploymentName string) bool {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
-	if r.logCache == nil {
+	if r.cooldownCache == nil {
 		return false
 	}
 
-	lastScale, exists := r.logCache[deploymentName]
+	lastScale, exists := r.cooldownCache[deploymentName]
 	if !exists {
 		return false
 	}
@@ -180,11 +180,11 @@ func (r *DeploymentReconciler) setCoolDown(deploymentName string) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
-	if r.logCache == nil {
-		r.logCache = make(map[string]time.Time)
+	if r.cooldownCache == nil {
+		r.cooldownCache = make(map[string]time.Time)
 	}
 
-	r.logCache[deploymentName] = time.Now()
+	r.cooldownCache[deploymentName] = time.Now()
 }
 
 func (r *DeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
