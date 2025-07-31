@@ -174,10 +174,8 @@ func (r *SecretRotatorReconciler) batchUpdateSecret(ctx context.Context, secret 
 		err := r.createRotationEvent(ctx, secret, age, threshold)
 		return true, err
 	} else {
-		// Remove rotation annotation if it exists
-		if _, exists := secretCopy.Annotations[NeedsRotationAnnotation]; exists {
-			delete(secretCopy.Annotations, NeedsRotationAnnotation)
-		}
+		// Remove rotation annotation
+		delete(secretCopy.Annotations, NeedsRotationAnnotation)
 
 		err := r.Update(ctx, secretCopy)
 		return true, err

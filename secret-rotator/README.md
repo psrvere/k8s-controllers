@@ -268,3 +268,27 @@ if currentNeedsRotation == needsRotation {
 **Result:**
 - **Loop 1**: "Secret marked for rotation" (actual change)
 - **Loop 2**: "Secret already in correct state, no changes needed" (no change)
+
+### Q9: How do you safely remove keys from Go maps?
+
+A: The `delete` function in Go is safe to call even if the key doesn't exist - it won't cause an error.
+
+**Unnecessary Code:**
+```go
+// ❌ Unnecessary guard check
+if _, exists := map[key]; exists {
+    delete(map, key)
+}
+```
+
+**Correct Code:**
+```go
+// ✅ Safe to call directly
+delete(map, key)
+```
+
+**Why This Works:**
+- `delete` is a built-in function that safely removes keys
+- If the key doesn't exist, `delete` does nothing (no error)
+- The existence check is redundant and flagged by linters
+- This is a common Go idiom for map operations
