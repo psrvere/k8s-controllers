@@ -120,7 +120,7 @@ func (r *ServiceValidatorReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// Requeue after 5 minutes to check again
-	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 func shouldValidateService(service *corev1.Service) bool {
