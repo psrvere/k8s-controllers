@@ -3,6 +3,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +35,9 @@ const (
 
 	// Annotation to mark secrets that need rotation
 	NeedsRotationAnnotation = "secret-rotator/needs-rotation"
+
+	// Annotation to specify test age in days (test mode only)
+	TestAgeAnnotation = "secret-rotator/test-age-days"
 
 	// Default rotation threshold in days
 	DefaultRotationThreshold = 90
@@ -123,9 +128,30 @@ func (r *SecretRotatorReconciler) checkSecretRotation(secret *corev1.Secret) (bo
 	threshold := time.Duration(thresholdDays) * 24 * time.Hour
 
 	// Calculate secret age
-	age := time.Since(secret.CreationTimestamp.Time)
+	var age time.Duration
+	if os.Getenv("TEST_MODE") == "true" {
+		// Test mode: Use simulated time from annotation
+		age = r.calculateTestAge(secret)
+	} else {
+		// Production mode: Use real time since creation
+		age = time.Since(secret.CreationTimestamp.Time)
+	}
 
 	return age > threshold, age, threshold
+}
+
+func (r *SecretRotatorReconciler) calculateTestAge(secret *corev1.Secret) time.Duration {
+	// Use annotation to specify test age in days
+	if secret.Annotations != nil {
+		if testAgeStr, exists := secret.Annotations[TestAgeAnnotation]; exists {
+			if days, err := strconv.Atoi(testAgeStr); err == nil {
+				return time.Duration(days) * 24 * time.Hour
+			}
+		}
+	}
+
+	// Default test age: 1 day if no annotation specified
+	return 24 * time.Hour
 }
 
 func getRotationThreshold(secret *corev1.Secret) int {
