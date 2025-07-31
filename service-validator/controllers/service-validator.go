@@ -110,7 +110,7 @@ func (r *ServiceValidatorReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			log.Info("Service validation failed",
 				"service", service.Name,
 				"namespace", service.Namespace,
-				"error", result.Error)
+				"error", result.Error())
 		}
 	} else {
 		log.Info("Service validation status already correct, no changes needed",
