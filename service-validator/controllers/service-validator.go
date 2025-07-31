@@ -281,12 +281,18 @@ func getValidationStatus(service *corev1.Service) string {
 }
 
 func (r *ServiceValidatorReconciler) createValidationEvent(ctx context.Context, service *corev1.Service, errors []string) error {
+	log := log.FromContext(ctx)
+
 	// Check if event already exists to prevent duplicates
 	eventName := fmt.Sprintf("%s-validation-alert", service.Name)
 	existingEvent := &corev1.Event{}
 	err := r.Get(ctx, client.ObjectKey{Name: eventName, Namespace: service.Namespace}, existingEvent)
 	if err == nil {
 		// Event already exists, don't create duplicate
+		log.Info("Validation event already exists, skipping creation",
+			"service", service.Name,
+			"namespace", service.Namespace,
+			"eventName", eventName)
 		return nil
 	}
 
@@ -314,7 +320,21 @@ func (r *ServiceValidatorReconciler) createValidationEvent(ctx context.Context, 
 		},
 	}
 
-	return r.Create(ctx, event)
+	err = r.Create(ctx, event)
+	if err != nil {
+		log.Error(err, "Failed to create validation event",
+			"service", service.Name,
+			"namespace", service.Namespace,
+			"eventName", eventName)
+		return err
+	}
+
+	log.Info("Created validation event",
+		"service", service.Name,
+		"namespace", service.Namespace,
+		"eventName", eventName,
+		"errors", errors)
+	return nil
 }
 
 func (r *ServiceValidatorReconciler) SetupWithManager(mgr ctrl.Manager) error {
