@@ -360,12 +360,9 @@ func (r *ServiceValidatorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return true
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool {
-				log := log.FromContext(context.Background())
-				log.Info("Event: Service deleted",
-					"name", e.Object.GetName(),
-					"namespace", e.Object.GetNamespace(),
-					"resourceVersion", e.Object.GetResourceVersion())
-				return true
+				// No action needed on delete - service deletion automatically cleans up
+				// annotations and events we created
+				return false
 			},
 		}).
 		Complete(r)

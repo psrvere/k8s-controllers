@@ -164,3 +164,18 @@ func validateServiceEndpoints() ValidationResult {
     return NewValidationResult(true, serviceName, "validation successful")
 }
 ```
+
+**Q: How does the controller handle different event types?**
+
+A: The controller uses event filtering to optimize performance and reduce unnecessary processing:
+
+**Event Filtering Strategy:**
+- **Create Events**: Processed to validate new services
+- **Update Events**: Processed to revalidate when services change (especially validation label changes)
+- **Delete Events**: Skipped entirely - no cleanup needed since service deletion automatically removes our annotations and events
+
+**Why skip delete events?**
+- Service deletion automatically cleans up all associated resources
+- Our annotations (`service-validator/status`) are deleted with the service
+- Any events we created are garbage collected by Kubernetes
+- No manual cleanup is required, reducing controller complexity and improving performance
