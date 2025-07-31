@@ -72,37 +72,19 @@ func (r *SecretRotatorReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Check if secret needs rotation
 	needsRotation, age, threshold := r.checkSecretRotation(secret)
 
-	// Update last check annotation
-	if err := r.updateLastCheckAnnotation(ctx, secret); err != nil {
-		log.Error(err, "Failed to update last check annotation", "secret", secret.Name, "namespace", secret.Namespace)
+	// Batch update secret with all changes in one operation
+	if err := r.batchUpdateSecret(ctx, secret, needsRotation, age, threshold); err != nil {
+		log.Error(err, "Failed to batch update secret", "secret", secret.Name, "namespace", secret.Namespace)
 		return ctrl.Result{}, err
 	}
 
 	if needsRotation {
-		// Mark secret as needing rotation
-		if err := r.markSecretForRotation(ctx, secret); err != nil {
-			log.Error(err, "Failed to mark secret for rotation", "secret", secret.Name, "namespace", secret.Namespace)
-			return ctrl.Result{}, err
-		}
-
-		// Create event to alert about rotation
-		if err := r.createRotationEvent(ctx, secret, age, threshold); err != nil {
-			log.Error(err, "Failed to create rotation event", "secret", secret.Name, "namespace", secret.Namespace)
-			return ctrl.Result{}, err
-		}
-
 		log.Info("Secret marked for rotation",
 			"secret", secret.Name,
 			"namespace", secret.Namespace,
 			"age", age,
 			"threshold", threshold)
 	} else {
-		// Remove rotation annotation if it exists
-		if err := r.removeRotationAnnotation(ctx, secret); err != nil {
-			log.Error(err, "Failed to remove rotation annotation", "secret", secret.Name, "namespace", secret.Namespace)
-			return ctrl.Result{}, err
-		}
-
 		log.Info("Secret is within rotation threshold",
 			"secret", secret.Name,
 			"namespace", secret.Namespace,
@@ -140,6 +122,39 @@ func (r *SecretRotatorReconciler) checkSecretRotation(secret *corev1.Secret) (bo
 	return age > threshold, age, threshold
 }
 
+func (r *SecretRotatorReconciler) batchUpdateSecret(ctx context.Context, secret *corev1.Secret, needsRotation bool, age, threshold time.Duration) error {
+	// Create a deep copy to avoid race conditions
+	secretCopy := secret.DeepCopy()
+
+	// Initialize annotations if nil
+	if secretCopy.Annotations == nil {
+		secretCopy.Annotations = make(map[string]string)
+	}
+
+	// Always update last check annotation
+	secretCopy.Annotations[LastRotationCheckAnnotation] = time.Now().Format(time.RFC3339)
+
+	if needsRotation {
+		// Mark secret as needing rotation
+		secretCopy.Annotations[NeedsRotationAnnotation] = "true"
+
+		// Update the secret first
+		if err := r.Update(ctx, secretCopy); err != nil {
+			return err
+		}
+
+		// Create event to alert about rotation
+		return r.createRotationEvent(ctx, secret, age, threshold)
+	} else {
+		// Remove rotation annotation if it exists
+		if _, exists := secretCopy.Annotations[NeedsRotationAnnotation]; exists {
+			delete(secretCopy.Annotations, NeedsRotationAnnotation)
+		}
+
+		return r.Update(ctx, secretCopy)
+	}
+}
+
 func (r *SecretRotatorReconciler) calculateTestAge(secret *corev1.Secret) time.Duration {
 	// Use annotation to specify test age in days
 	if secret.Annotations != nil {
@@ -171,45 +186,6 @@ func getRotationThreshold(secret *corev1.Secret) int {
 	}
 
 	return threshold
-}
-
-func (r *SecretRotatorReconciler) updateLastCheckAnnotation(ctx context.Context, secret *corev1.Secret) error {
-	// Create a deep copy to avoid race conditions
-	secretCopy := secret.DeepCopy()
-
-	if secretCopy.Annotations == nil {
-		secretCopy.Annotations = make(map[string]string)
-	}
-
-	secretCopy.Annotations[LastRotationCheckAnnotation] = time.Now().Format(time.RFC3339)
-	return r.Update(ctx, secretCopy)
-}
-
-func (r *SecretRotatorReconciler) markSecretForRotation(ctx context.Context, secret *corev1.Secret) error {
-	// Create a deep copy to avoid race conditions
-	secretCopy := secret.DeepCopy()
-
-	if secretCopy.Annotations == nil {
-		secretCopy.Annotations = make(map[string]string)
-	}
-
-	secretCopy.Annotations[NeedsRotationAnnotation] = "true"
-	return r.Update(ctx, secretCopy)
-}
-
-func (r *SecretRotatorReconciler) removeRotationAnnotation(ctx context.Context, secret *corev1.Secret) error {
-	if secret.Annotations == nil {
-		return nil
-	}
-
-	if _, exists := secret.Annotations[NeedsRotationAnnotation]; exists {
-		// Create a deep copy to avoid race conditions
-		secretCopy := secret.DeepCopy()
-		delete(secretCopy.Annotations, NeedsRotationAnnotation)
-		return r.Update(ctx, secretCopy)
-	}
-
-	return nil
 }
 
 func (r *SecretRotatorReconciler) createRotationEvent(ctx context.Context, secret *corev1.Secret, age, threshold time.Duration) error {
