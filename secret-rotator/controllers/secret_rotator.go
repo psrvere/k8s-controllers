@@ -73,19 +73,28 @@ func (r *SecretRotatorReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	needsRotation, age, threshold := r.checkSecretRotation(secret)
 
 	// Batch update secret with all changes in one operation
-	if err := r.batchUpdateSecret(ctx, secret, needsRotation, age, threshold); err != nil {
+	updated, err := r.batchUpdateSecret(ctx, secret, needsRotation, age, threshold)
+	if err != nil {
 		log.Error(err, "Failed to batch update secret", "secret", secret.Name, "namespace", secret.Namespace)
 		return ctrl.Result{}, err
 	}
 
-	if needsRotation {
-		log.Info("Secret marked for rotation",
-			"secret", secret.Name,
-			"namespace", secret.Namespace,
-			"age", age,
-			"threshold", threshold)
+	if updated {
+		if needsRotation {
+			log.Info("Secret marked for rotation",
+				"secret", secret.Name,
+				"namespace", secret.Namespace,
+				"age", age,
+				"threshold", threshold)
+		} else {
+			log.Info("Secret is within rotation threshold",
+				"secret", secret.Name,
+				"namespace", secret.Namespace,
+				"age", age,
+				"threshold", threshold)
+		}
 	} else {
-		log.Info("Secret is within rotation threshold",
+		log.Info("Secret already in correct state, no changes needed",
 			"secret", secret.Name,
 			"namespace", secret.Namespace,
 			"age", age,
@@ -122,7 +131,25 @@ func (r *SecretRotatorReconciler) checkSecretRotation(secret *corev1.Secret) (bo
 	return age > threshold, age, threshold
 }
 
-func (r *SecretRotatorReconciler) batchUpdateSecret(ctx context.Context, secret *corev1.Secret, needsRotation bool, age, threshold time.Duration) error {
+func (r *SecretRotatorReconciler) batchUpdateSecret(ctx context.Context, secret *corev1.Secret, needsRotation bool, age, threshold time.Duration) (bool, error) {
+	// Check if secret is already in desired state (idempotency)
+	currentNeedsRotation := secret.Annotations != nil && secret.Annotations[NeedsRotationAnnotation] == "true"
+
+	// If state is already correct, skip update
+	if currentNeedsRotation == needsRotation {
+		// Only update last check annotation if needed
+		if secret.Annotations == nil || secret.Annotations[LastRotationCheckAnnotation] == "" {
+			secretCopy := secret.DeepCopy()
+			if secretCopy.Annotations == nil {
+				secretCopy.Annotations = make(map[string]string)
+			}
+			secretCopy.Annotations[LastRotationCheckAnnotation] = time.Now().Format(time.RFC3339)
+			err := r.Update(ctx, secretCopy)
+			return true, err
+		}
+		return false, nil // No changes needed
+	}
+
 	// Create a deep copy to avoid race conditions
 	secretCopy := secret.DeepCopy()
 
@@ -140,18 +167,20 @@ func (r *SecretRotatorReconciler) batchUpdateSecret(ctx context.Context, secret 
 
 		// Update the secret first
 		if err := r.Update(ctx, secretCopy); err != nil {
-			return err
+			return false, err
 		}
 
 		// Create event to alert about rotation
-		return r.createRotationEvent(ctx, secret, age, threshold)
+		err := r.createRotationEvent(ctx, secret, age, threshold)
+		return true, err
 	} else {
 		// Remove rotation annotation if it exists
 		if _, exists := secretCopy.Annotations[NeedsRotationAnnotation]; exists {
 			delete(secretCopy.Annotations, NeedsRotationAnnotation)
 		}
 
-		return r.Update(ctx, secretCopy)
+		err := r.Update(ctx, secretCopy)
+		return true, err
 	}
 }
 

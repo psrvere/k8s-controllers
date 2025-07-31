@@ -25,7 +25,7 @@ if _, err := fmt.Sscanf(thresholdStr, "%d", &threshold); err != nil {
 
 This is useful for parsing configuration values from Kubernetes annotations or other string sources.
 
-### Qe: How does the controller handle race conditions when updating Secrets?
+### Q2: How does the controller handle race conditions when updating Secrets?
 
 A: The controller uses deep copy and optimistic concurrency control to prevent race conditions when multiple controllers might update the same Secret.
 
@@ -68,7 +68,7 @@ A: Events provide observability, monitoring, and audit trails for controller act
 - Log to stdout (not Kubernetes-native)
 - Custom resources (more complex)
 
-### Q: What is ResourceVersion in Kubernetes?
+### Q4: What is ResourceVersion in Kubernetes?
 
 A: `ResourceVersion` is an optimistic concurrency control mechanism that tracks object modifications and prevents conflicting updates.
 
@@ -101,7 +101,7 @@ InvolvedObject: corev1.ObjectReference{
 - **Data integrity**: Ensures you're not overwriting someone else's changes
 - **Event correlation**: Links events to specific object versions
 
-### Q4: Why do test secrets show as "just created" even with old creationTimestamp?
+### Q5: Why do test secrets show as "just created" even with old creationTimestamp?
 
 A: Kubernetes ignores the `creationTimestamp` field in YAML files and always sets the actual creation time to when the object is created in the cluster.
 
@@ -133,7 +133,7 @@ kubectl patch secret old-database-secret -p '{"metadata":{"creationTimestamp":"2
 
 This is important for testing time-based controllers like secret rotators.
 
-### Q5: We saw multiple events created, what was the problem and how did we fix it?
+### Q6: We saw multiple events created, what was the problem and how did we fix it?
 
 A: These errors occur due to **race conditions** when multiple reconciliation loops try to update the same object simultaneously.
 
@@ -176,7 +176,7 @@ ERROR Failed to create rotation event
 - Use **deep copy pattern** (already implemented) to prevent race conditions
 - Consider **reconciliation filtering** to reduce unnecessary updates
 
-### Q6: After fixing above, we still had multiple reconciliation loops. What was happening?
+### Q7: After fixing above, we still had multiple reconciliation loops. What was happening?
 
 A: We implemented **batch updates** to reduce multiple API calls that were causing race conditions.
 
@@ -224,3 +224,47 @@ INFO Secret marked for rotation  # Clean, single reconciliation
 - **Single ResourceVersion change** = no conflicts
 - **Atomic updates** = consistent state
 - **Simpler logic** = easier to debug
+
+### Q8: How did we fix the duplicate "Secret marked for rotation" logs?
+
+A: We implemented **idempotency logic** to check if the secret is already in the desired state before making changes.
+
+**Problem:**
+```
+Loop 1: Secret needs rotation → Adds annotation → Logs: "Secret marked for rotation"
+Loop 2: Secret needs rotation → Adds annotation again → Logs: "Secret marked for rotation" (duplicate)
+```
+
+**Solution:**
+```go
+// Check if secret is already in desired state (idempotency)
+currentNeedsRotation := secret.Annotations != nil && secret.Annotations[NeedsRotationAnnotation] == "true"
+
+// If state is already correct, skip update
+if currentNeedsRotation == needsRotation {
+    return false, nil // No changes needed
+}
+```
+
+**What We Changed:**
+1. **Before**: Always updated and logged
+   ```go
+   // ❌ Always processed and logged
+   r.batchUpdateSecret(ctx, secret, needsRotation, age, threshold)
+   log.Info("Secret marked for rotation")  // Always logged
+   ```
+
+2. **After**: Check state and log appropriately
+   ```go
+   // ✅ Check if update was actually made
+   updated, err := r.batchUpdateSecret(ctx, secret, needsRotation, age, threshold)
+   if updated {
+       log.Info("Secret marked for rotation")  // Only if changed
+   } else {
+       log.Info("Secret already in correct state, no changes needed")  // If no change
+   }
+   ```
+
+**Result:**
+- **Loop 1**: "Secret marked for rotation" (actual change)
+- **Loop 2**: "Secret already in correct state, no changes needed" (no change)
