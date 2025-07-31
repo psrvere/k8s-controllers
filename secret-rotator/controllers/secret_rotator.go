@@ -165,12 +165,10 @@ func getRotationThreshold(secret *corev1.Secret) int {
 	}
 
 	// Parse threshold (for simplicity, we'll use default if parsing fails)
-	var threshold int
-	fmt.Println("thresholdStr: ", thresholdStr)
-	if _, err := fmt.Sscanf(thresholdStr, "%d", &threshold); err != nil {
+	threshold, err := strconv.Atoi(thresholdStr)
+	if err != nil {
 		return DefaultRotationThreshold
 	}
-	fmt.Println("threshold: ", threshold)
 
 	return threshold
 }
