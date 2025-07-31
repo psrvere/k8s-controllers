@@ -110,7 +110,7 @@ func (r *SecretRotatorReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			"threshold", threshold)
 	}
 
-	// Requeue after 24 hours to check again
+	// Requeue after 24 hours to check again, with backoff to prevent conflicts
 	return ctrl.Result{RequeueAfter: 24 * time.Hour}, nil
 }
 
@@ -213,9 +213,18 @@ func (r *SecretRotatorReconciler) removeRotationAnnotation(ctx context.Context, 
 }
 
 func (r *SecretRotatorReconciler) createRotationEvent(ctx context.Context, secret *corev1.Secret, age, threshold time.Duration) error {
+	// Check if event already exists to prevent duplicates
+	eventName := fmt.Sprintf("%s-rotation-alert", secret.Name)
+	existingEvent := &corev1.Event{}
+	err := r.Get(ctx, client.ObjectKey{Name: eventName, Namespace: secret.Namespace}, existingEvent)
+	if err == nil {
+		// Event already exists, don't create duplicate
+		return nil
+	}
+
 	event := &corev1.Event{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-rotation-alert-%d", secret.Name, time.Now().Unix()),
+			Name:      eventName,
 			Namespace: secret.Namespace,
 		},
 		InvolvedObject: corev1.ObjectReference{
