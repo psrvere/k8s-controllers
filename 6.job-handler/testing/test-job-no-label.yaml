@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-no-label-job
+  namespace: default
+  # No job-handler/enabled label - should be ignored by controller
+spec:
+  template:
+    spec:
+      containers:
+      - name: no-label-container
+        image: busybox:1.35
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          echo "This job has no handler label..."
+          echo "It should be ignored by the controller"
+          echo "Job completed!"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+      restartPolicy: Never
+  backoffLimit: 0 

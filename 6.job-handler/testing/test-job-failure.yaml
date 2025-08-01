@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-failure-job
+  namespace: default
+  labels:
+    job-handler/enabled: "true"
+spec:
+  template:
+    spec:
+      containers:
+      - name: failure-container
+        image: busybox:1.35
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          echo "Starting job that will fail..."
+          echo "Processing data..."
+          echo "Encountering an error..."
+          echo "Job will fail now"
+          exit 1
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+      restartPolicy: Never
+  backoffLimit: 0 

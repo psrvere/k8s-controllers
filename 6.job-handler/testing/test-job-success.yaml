@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-success-job
+  namespace: default
+  labels:
+    job-handler/enabled: "true"
+spec:
+  template:
+    spec:
+      containers:
+      - name: success-container
+        image: busybox:1.35
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          echo "Starting successful job..."
+          echo "Processing data..."
+          echo "Job completed successfully!"
+          echo "Final result: SUCCESS"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+      restartPolicy: Never
+  backoffLimit: 0 
