@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -49,6 +52,9 @@ const (
 
 	// Requeue interval
 	RequeueInterval = 30 * time.Second
+
+	// Eviction configuration
+	EvictionGracePeriod = int64(30) // 30 seconds grace period
 )
 
 // NodeResourceUsage represents the resource allocation of a node
@@ -463,41 +469,41 @@ func (r *NodeBalancerReconciler) findBestTargetNode(underutilizedNodes []NodeRes
 func (r *NodeBalancerReconciler) evictPod(ctx context.Context, pod *corev1.Pod, targetNodeName string) error {
 	log := log.FromContext(ctx)
 
-	// Create a deep copy to avoid race conditions
-	podCopy := pod.DeepCopy()
-
-	// Add annotation to mark this pod for rebalancing
-	if podCopy.Annotations == nil {
-		podCopy.Annotations = make(map[string]string)
+	// 1. Pre-flight validation
+	if err := r.validateEviction(ctx, pod); err != nil {
+		log.Info("Eviction validation failed, skipping", "pod", pod.Name, "error", err)
+		return nil // Don't fail, just skip this pod
 	}
-	podCopy.Annotations[RebalancingStatusAnnotation] = StatusRebalancing
-	podCopy.Annotations[TargetNodeAnnotation] = targetNodeName
-	podCopy.Annotations[EvictedAtAnnotation] = time.Now().Format(time.RFC3339)
 
-	// Update the pod
-	err := r.Update(ctx, podCopy)
+	// 2. Create eviction object with proper configuration
+	eviction := &policyv1.Eviction{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pod.Name,
+			Namespace: pod.Namespace,
+		},
+		DeleteOptions: &metav1.DeleteOptions{
+			GracePeriodSeconds: &[]int64{EvictionGracePeriod}[0],
+		},
+	}
+
+	// 3. Execute eviction via Kubernetes Eviction API
+	err := r.Client.SubResource("eviction").Create(ctx, pod, eviction)
 	if err != nil {
-		return fmt.Errorf("failed to update pod for eviction: %w", err)
+		return r.handleEvictionError(err, pod)
 	}
 
-	// Create an event to track the eviction
+	// 4. Create tracking event
 	err = r.createEvictionEvent(ctx, pod, targetNodeName)
 	if err != nil {
 		log.Error(err, "Failed to create eviction event")
 		// Don't fail the eviction for event creation failure
 	}
 
-	// In a real implementation, you would use the Kubernetes eviction API
-	// For this demo, we'll just delete the pod and let it be rescheduled
-	err = r.Delete(ctx, podCopy)
-	if err != nil {
-		return fmt.Errorf("failed to delete pod for eviction: %w", err)
-	}
-
-	log.Info("Pod evicted for rebalancing",
+	log.Info("Pod successfully evicted via Eviction API",
 		"pod", pod.Name,
 		"namespace", pod.Namespace,
-		"targetNode", targetNodeName)
+		"targetNode", targetNodeName,
+		"gracePeriod", EvictionGracePeriod)
 
 	return nil
 }
@@ -538,6 +544,82 @@ func (r *NodeBalancerReconciler) createEvictionEvent(ctx context.Context, pod *c
 	}
 
 	return r.Create(ctx, event)
+}
+
+// validateEviction performs pre-flight checks before evicting a pod
+func (r *NodeBalancerReconciler) validateEviction(ctx context.Context, pod *corev1.Pod) error {
+	// Check if pod is evictable
+	if !isPodEvictable(pod) {
+		return fmt.Errorf("pod is not evictable")
+	}
+
+	// Check if pod is terminating
+	if pod.DeletionTimestamp != nil {
+		return fmt.Errorf("pod is already terminating")
+	}
+
+	// Check Pod Disruption Budget (PDB)
+	if err := r.checkPodDisruptionBudget(ctx, pod); err != nil {
+		return fmt.Errorf("PDB check failed: %w", err)
+	}
+
+	return nil
+}
+
+// checkPodDisruptionBudget verifies that evicting the pod won't violate any PDBs
+func (r *NodeBalancerReconciler) checkPodDisruptionBudget(ctx context.Context, pod *corev1.Pod) error {
+	// Get PDBs that match this pod
+	pdbList := &policyv1.PodDisruptionBudgetList{}
+	err := r.List(ctx, pdbList, client.InNamespace(pod.Namespace))
+	if err != nil {
+		return err
+	}
+
+	for _, pdb := range pdbList.Items {
+		// Check if this PDB applies to our pod
+		if r.podMatchesPDB(pod, &pdb) {
+			// Check if eviction would violate PDB
+			if pdb.Status.CurrentHealthy <= int32(pdb.Spec.MinAvailable.IntValue()) {
+				return fmt.Errorf("eviction would violate PDB %s", pdb.Name)
+			}
+		}
+	}
+
+	return nil
+}
+
+// podMatchesPDB checks if a pod is covered by a specific PDB
+func (r *NodeBalancerReconciler) podMatchesPDB(pod *corev1.Pod, pdb *policyv1.PodDisruptionBudget) bool {
+	if pdb.Spec.Selector == nil {
+		return false
+	}
+
+	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+	if err != nil {
+		return false
+	}
+
+	return selector.Matches(labels.Set(pod.Labels))
+}
+
+// handleEvictionError handles different types of eviction errors
+func (r *NodeBalancerReconciler) handleEvictionError(err error, pod *corev1.Pod) error {
+	log := log.FromContext(context.Background())
+
+	switch {
+	case strings.Contains(err.Error(), "PodDisruptionBudget"):
+		log.Info("Eviction blocked by PDB", "pod", pod.Name)
+		return nil // Don't treat PDB violations as errors
+	case strings.Contains(err.Error(), "not found"):
+		log.Info("Pod already deleted", "pod", pod.Name)
+		return nil // Pod was already deleted
+	case strings.Contains(err.Error(), "forbidden"):
+		log.Error(err, "Eviction forbidden - insufficient permissions", "pod", pod.Name)
+		return fmt.Errorf("eviction forbidden: %w", err)
+	default:
+		log.Error(err, "Eviction failed", "pod", pod.Name)
+		return fmt.Errorf("eviction failed: %w", err)
+	}
 }
 
 func (r *NodeBalancerReconciler) SetupWithManager(mgr ctrl.Manager) error {

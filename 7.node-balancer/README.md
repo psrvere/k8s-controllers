@@ -70,7 +70,18 @@ spec:
   selector:
     matchLabels:
       app: my-app
+status:
+  currentHealthy: 3      # Number of healthy pods matching selector
+  desiredHealthy: 2      # Number of pods that should be healthy (from spec)
+  disruptionsAllowed: 1  # How many more pods can be evicted
+  expectedPods: 3        # Total pods matching selector
 ```
+
+**PDB Status Fields**:
+- **`currentHealthy`**: Number of healthy pods matching the selector
+- **`desiredHealthy`**: Number of pods that should be healthy (from spec.minAvailable)
+- **`disruptionsAllowed`**: How many more pods can be evicted (currentHealthy - desiredHealthy)
+- **`expectedPods`**: Total pods matching the selector
 
 The Eviction API respects PDBs and only evicts pods if it won't violate the budget, ensuring application availability during node rebalancing operations.
 
@@ -466,3 +477,194 @@ A: The `findBestTargetNode` function uses pointers to slice elements (`&underuti
 
 **Trade-off**: The pointer approach prioritizes simplicity and performance over immutability, which is acceptable for this internal controller logic where the caller expects the slice to be modified.
 
+### Q: How do Pod Disruption Budgets (PDBs) work?
+A: PDBs and Pods have an **indirect relationship** through label selectors, not direct references.
+
+**How PDBs Work**:
+```yaml
+# Pod with labels
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app-pod
+  labels:
+    app: my-app
+    tier: frontend
+spec:
+  containers:
+  - name: app
+    image: my-app:latest
+
+---
+# PDB that matches the pod via labels
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: my-app-pdb
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: my-app  # This matches the pod's label
+```
+
+**Why Manual Matching?**:
+- **Pods don't have PDB names**: They only have labels
+- **PDBs use label selectors**: To determine which pods they protect
+- **Multiple PDBs can protect one pod**: Based on different label combinations
+- **Dynamic relationship**: Pods can be created/deleted without touching PDBs
+
+**Real-World Example**:
+```yaml
+# Pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-server-1
+  labels:
+    app: web-server
+    tier: frontend
+    environment: production
+
+---
+# PDB that protects this pod
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web-server-pdb
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: web-server
+      environment: production
+
+---
+# Another PDB that also protects this pod
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      tier: frontend
+```
+
+**Our Implementation**:
+```go
+// Production version using Kubernetes label library
+func (r *NodeBalancerReconciler) podMatchesPDB(pod *corev1.Pod, pdb *policyv1.PodDisruptionBudget) bool {
+    if pdb.Spec.Selector == nil {
+        return false
+    }
+    
+    selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+    if err != nil {
+        return false
+    }
+    
+    return selector.Matches(labels.Set(pod.Labels))
+}
+```
+
+**Why This Design**:
+1. **Flexibility**: One PDB can protect multiple pods
+2. **Scalability**: Don't need to update every pod when PDB changes
+3. **Dynamic**: Pods can be created/deleted without touching PDBs
+4. **Hierarchical**: Multiple PDBs can protect the same pod
+
+The relationship is: **PDB → Label Selector → Pod Labels**, not **Pod → PDB Name**.
+
+### Q: What is a SubResource and why do we use it for eviction?
+A: A **SubResource** is a special endpoint under a Kubernetes resource that provides additional functionality. It's like a "sub-API" under the main resource.
+
+**Regular API Calls vs SubResource Calls**:
+
+**Regular API Calls** (what we use for most operations):
+```go
+// Direct resource operations
+err := r.Client.Get(ctx, types.NamespacedName{Name: "pod-name", Namespace: "default"}, pod)
+err := r.Client.List(ctx, podList)
+err := r.Client.Create(ctx, pod)
+err := r.Client.Update(ctx, pod)
+err := r.Client.Delete(ctx, pod)
+```
+
+**SubResource Calls** (what we use for eviction):
+```go
+// SubResource operations
+err := r.Client.SubResource("eviction").Create(ctx, pod, eviction)
+err := r.Client.SubResource("status").Update(ctx, pod)
+err := r.Client.SubResource("scale").Get(ctx, deployment, &scale)
+```
+
+**Why Use SubResource for Eviction?**:
+
+**Direct Deletion** (what we had before):
+```go
+err := r.Delete(ctx, pod)  // Simple deletion
+```
+**Problems**:
+- No PDB checking
+- No graceful termination
+- No eviction-specific logic
+
+**Eviction SubResource** (what we have now):
+```go
+err := r.Client.SubResource("eviction").Create(ctx, pod, eviction)
+```
+**Benefits**:
+- **PDB validation**: Automatically checks Pod Disruption Budgets
+- **Graceful termination**: Respects grace periods
+- **Better error handling**: Specific eviction-related errors
+- **Production safety**: Built-in safeguards
+
+**API Structure**:
+```
+/api/v1/namespaces/{namespace}/pods/{name}           # Regular pod operations
+/api/v1/namespaces/{namespace}/pods/{name}/eviction  # Eviction subresource
+/api/v1/namespaces/{namespace}/pods/{name}/status    # Status subresource
+/api/v1/namespaces/{namespace}/pods/{name}/log       # Log subresource
+```
+
+**Examples of SubResources**:
+- **Eviction**: Graceful pod termination with PDB checking
+- **Status**: Update only status fields, not spec
+- **Scale**: Get/update deployment scale
+- **Log**: Access pod logs
+
+**Why This Matters**:
+The **SubResource** approach gives us all the production benefits of the Eviction API instead of simple deletion, making our controller much more robust and safe for real-world use.
+
+### Q: Why do we check PDBs in our code when the Eviction API already checks them?
+A: We check PDBs proactively for better performance and user experience.
+
+**Why both checks?**:
+- **Our check**: Proactive - prevents unnecessary API calls
+- **Eviction API check**: Reactive - validates when we attempt eviction
+
+**Benefits of our PDB check**:
+- **Fail fast**: Avoid unnecessary Eviction API calls
+- **Better logging**: "PDB check failed, skipping" vs generic error
+- **Performance**: Don't make API calls that will be rejected
+- **Custom logic**: Can implement organization-specific PDB handling
+
+**Example**:
+```go
+// With our check - efficient
+if err := r.checkPodDisruptionBudget(ctx, pod); err != nil {
+    log.Info("Skipping pod due to PDB", "pod", pod.Name)
+    continue  // Try next pod
+}
+
+// Without our check - less efficient
+err := r.Client.SubResource("eviction").Create(ctx, pod, eviction)
+if err != nil && strings.Contains(err.Error(), "PodDisruptionBudget") {
+    log.Info("Eviction blocked by PDB", "pod", pod.Name)
+    continue  // Try next pod
+}
+```
+
+The redundancy is intentional for **defense in depth** and **better performance**.
