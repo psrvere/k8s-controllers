@@ -27,8 +27,11 @@ const (
 	// Label to identify nodes that should be balanced
 	BalancerLabel = "node-balancer/enabled"
 
-	// Annotation to track rebalancing status
+	// Annotations
 	RebalancingStatusAnnotation = "node-balancer/status"
+	TargetNodeAnnotation        = "node-balancer/target-node"
+	EvictedAtAnnotation         = "node-balancer/evicted-at"
+	EvictableAnnotation         = "node-balancer/evictable"
 
 	// Status values
 	StatusBalanced    = "balanced"
@@ -267,8 +270,8 @@ func isPodEvictable(pod *corev1.Pod) bool {
 
 	// Don't evict pods with specific annotations
 	if pod.Annotations != nil {
-		if _, exists := pod.Annotations["node-balancer/evictable"]; exists {
-			evictable, _ := strconv.ParseBool(pod.Annotations["node-balancer/evictable"])
+		if _, exists := pod.Annotations[EvictableAnnotation]; exists {
+			evictable, _ := strconv.ParseBool(pod.Annotations[EvictableAnnotation])
 			return evictable
 		}
 	}
@@ -468,8 +471,8 @@ func (r *NodeBalancerReconciler) evictPod(ctx context.Context, pod *corev1.Pod, 
 		podCopy.Annotations = make(map[string]string)
 	}
 	podCopy.Annotations[RebalancingStatusAnnotation] = StatusRebalancing
-	podCopy.Annotations["node-balancer/target-node"] = targetNodeName
-	podCopy.Annotations["node-balancer/evicted-at"] = time.Now().Format(time.RFC3339)
+	podCopy.Annotations[TargetNodeAnnotation] = targetNodeName
+	podCopy.Annotations[EvictedAtAnnotation] = time.Now().Format(time.RFC3339)
 
 	// Update the pod
 	err := r.Update(ctx, podCopy)
