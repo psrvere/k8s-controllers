@@ -1457,3 +1457,19 @@ rules:
 - **Production Ready**: Appropriate for real-world deployments
 - **Auditable**: Easy to understand and review permissions
 
+### Q: Why did we change the job deletion order in the controller?
+
+**A:** We encountered a race condition where the controller was trying to update a job that had already been deleted. The original flow was:
+
+1. Process job (create ConfigMap, delete job)
+2. Try to update job status (fails because job was deleted)
+
+**The Problem:**
+- Job gets deleted in `processCompletedJob`
+- Controller tries to update job annotations in `updateJobProcessingStatus`
+- Update fails with "UID mismatch" because job no longer exists
+
+**The Solution:**
+- Move job deletion to happen **after** status update
+- Add `ShouldDelete` flag to `JobProcessingResult` to indicate when deletion is needed
+- Update job status first, then delete job if successful

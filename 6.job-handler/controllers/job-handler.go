@@ -50,6 +50,7 @@ type JobProcessingResult struct {
 	Errors        []string
 	Logs          string
 	ConfigMapName string
+	ShouldDelete  bool // Flag indicating if job should be deleted
 }
 
 func (r JobProcessingResult) Error() string {
@@ -64,12 +65,13 @@ func (r JobProcessingResult) Error() string {
 }
 
 // NewJobProcessingResult creates a new job processing result
-func NewJobProcessingResult(isCompleted bool, jobName, reason string, errors ...string) JobProcessingResult {
+func NewJobProcessingResult(isCompleted bool, jobName, reason string, shouldDelete bool, errors ...string) JobProcessingResult {
 	return JobProcessingResult{
-		IsCompleted: isCompleted,
-		JobName:     jobName,
-		Reason:      reason,
-		Errors:      errors,
+		IsCompleted:  isCompleted,
+		JobName:      jobName,
+		Reason:       reason,
+		ShouldDelete: shouldDelete,
+		Errors:       errors,
 	}
 }
 
@@ -111,7 +113,7 @@ func (r *JobHandlerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Process the completed job (handles both success and failure)
 	result := r.processCompletedJob(ctx, job)
 
-	// Update job with processing results
+	// Update job with processing results BEFORE deleting it
 	updated, err := r.updateJobProcessingStatus(ctx, job, result)
 	if err != nil {
 		log.Error(err, "Failed to update job processing status", "job", job.Name, "namespace", job.Namespace)
@@ -124,6 +126,16 @@ func (r *JobHandlerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				"job", job.Name,
 				"namespace", job.Namespace,
 				"configMap", result.ConfigMapName)
+
+			// Delete the job after successful processing and status update
+			if result.ShouldDelete {
+				err = r.deleteJob(ctx, job)
+				if err != nil {
+					log.Error(err, "Failed to delete job after processing", "job", job.Name, "namespace", job.Namespace)
+					return ctrl.Result{}, err
+				}
+				log.Info("Job deleted after successful processing", "job", job.Name, "namespace", job.Namespace)
+			}
 		} else {
 			log.Info("Job processing failed",
 				"job", job.Name,
@@ -189,27 +201,21 @@ func (r *JobHandlerReconciler) processCompletedJob(ctx context.Context, job *bat
 		}
 
 		if len(errors) > 0 {
-			return NewJobProcessingResult(false, job.Name, "processing failed", errors...)
+			return NewJobProcessingResult(false, job.Name, "processing failed", false, errors...)
 		}
 
-		// Delete the job after successful processing
-		err = r.deleteJob(ctx, job)
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("failed to delete job: %v", err))
-			return NewJobProcessingResult(false, job.Name, "job cleanup failed", errors...)
-		}
-
-		result := NewJobProcessingResult(true, job.Name, "processing successful")
+		// Don't delete job here - let the caller handle it after status update
+		result := NewJobProcessingResult(true, job.Name, "processing successful", true)
 		result.Logs = logs // Keep logs for debugging and future extensibility
 		result.ConfigMapName = configMapName
 		return result
 	} else {
 		// Handle failed job - just collect logs, don't delete job
 		if len(errors) > 0 {
-			return NewJobProcessingResult(false, job.Name, "log collection failed", errors...)
+			return NewJobProcessingResult(false, job.Name, "log collection failed", false, errors...)
 		}
 
-		result := NewJobProcessingResult(false, job.Name, "job failed", "job did not complete successfully")
+		result := NewJobProcessingResult(false, job.Name, "job failed", false, "job did not complete successfully")
 		result.Logs = logs // Keep logs for debugging and future extensibility
 		return result
 	}
