@@ -1324,3 +1324,136 @@ event := &corev1.Event{
 - **Standard Kubernetes patterns** for event management
 - **Better observability** for operators and monitoring tools
 
+### Q: What RBAC permissions does our job-handler controller actually need?
+
+**A:** After analyzing the controller code, we determined the minimal required permissions:
+
+**Jobs (batch/v1):**
+- `get` - Fetches individual jobs in Reconcile method
+- `list` - Used by controller-runtime framework to establish initial state
+- `watch` - Used by controller-runtime framework to watch for job changes
+- `update` - Updates job annotations with processing status
+- `delete` - Deletes jobs after successful processing
+
+**Pods (core/v1):**
+- `list` - Lists pods to collect logs for job processing
+
+**ConfigMaps (core/v1):**
+- `create` - Creates ConfigMaps to store job results
+- `update` - Updates ConfigMaps if they already exist
+
+**Events (core/v1):**
+- `get` - Checks if processing events already exist (prevents duplicates)
+- `create` - Creates events for job processing notifications
+
+### Q: Why do we need `list` and `watch` permissions for Jobs?
+
+**A:** These permissions are required by the controller-runtime framework:
+
+**Controller Setup (line 447 in job-handler.go):**
+```go
+For(&batchv1.Job{}).
+```
+This tells controller-runtime to watch Jobs, which automatically:
+- **Lists Jobs** to establish the initial state
+- **Watches Jobs** for changes and triggers reconciliation
+- **Requires `list` and `watch` permissions** to function properly
+
+**Health Check (main.go lines 67-69):**
+```go
+jobList := &batchv1.JobList{}
+if err := mgr.GetClient().List(context.Background(), jobList, &client.ListOptions{Limit: 1}); err != nil {
+    return fmt.Errorf("failed to list jobs: %w", err)
+}
+```
+This readiness probe lists jobs to verify connectivity.
+
+### Q: What permissions did we remove and why?
+
+**A:** We removed unnecessary permissions to follow the principle of least privilege:
+
+**Removed from Jobs:**
+- `patch` - Controller uses `Update` not `Patch`
+
+**Removed from Pods:**
+- `get` - Controller only lists pods, doesn't get individual ones
+
+**Removed from ConfigMaps:**
+- `get`, `list`, `watch`, `patch` - Controller only creates/updates configmaps
+
+**Removed from Events:**
+- `list`, `watch` - Controller only gets and creates events
+
+### Q: Why don't we need `patch` permission for Jobs?
+
+**A:** Our controller uses `Update` operations, not `Patch`:
+
+**Controller Code (line 371 in job-handler.go):**
+```go
+err := r.Update(ctx, jobCopy)
+```
+
+**Update vs Patch:**
+- **Update**: Replaces entire object (what we use)
+- **Patch**: Modifies specific fields (what we don't use)
+
+**Why Update is Better for Our Use Case:**
+- **Simple**: We're updating annotations, which is straightforward
+- **Atomic**: Entire object is updated atomically
+- **Consistent**: Matches our deep-copy pattern for race condition prevention
+
+### Q: Why do we need `list` permission for Pods but not `get`?
+
+**A:** The controller only lists pods, never gets individual pods:
+
+**Pod Listing (line 221 in job-handler.go):**
+```go
+podList := &corev1.PodList{}
+err := r.List(ctx, podList, client.MatchingLabels{
+    "job-name": job.Name,
+}, client.InNamespace(job.Namespace))
+```
+
+**No Individual Pod Gets:**
+- Controller processes all pods for a job together
+- No need to get specific pods by name
+- Pod data is available in the list response
+
+### Q: What's our final RBAC configuration and why is it optimal?
+
+**A:** Our optimized RBAC follows the principle of least privilege:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: job-handler-role
+rules:
+  # Jobs - read, update, delete
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "update", "delete"]
+  
+  # Pods - read for log collection
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  
+  # ConfigMaps - create, update for storing results
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "update"]
+  
+  # Events - create for notifications
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "create"]
+```
+
+**Why This is Optimal:**
+- **Minimal Permissions**: Only what the controller actually uses
+- **Security**: Follows least privilege principle
+- **Maintainable**: Clear mapping between code and permissions
+- **Production Ready**: Appropriate for real-world deployments
+- **Auditable**: Easy to understand and review permissions
+
