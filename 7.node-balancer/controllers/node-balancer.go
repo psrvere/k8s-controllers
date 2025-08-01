@@ -633,7 +633,7 @@ func (r *NodeBalancerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			},
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				log := log.FromContext(context.Background())
-				log.Info("Event: Node updated", "node", e.Object.GetName())
+				log.Info("Event: Node updated", "node", e.ObjectNew.GetName())
 				return true
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool {
