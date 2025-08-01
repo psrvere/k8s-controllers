@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/psrvere/k8s-controllers/service-validator/controllers"
+	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
@@ -56,7 +62,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	// Custom readiness check that verifies the controller can access Kubernetes resources
+	if err := mgr.AddReadyzCheck("readyz", func(req *http.Request) error {
+		// Check if we can list services (basic connectivity test)
+		serviceList := &corev1.ServiceList{}
+		if err := mgr.GetClient().List(context.Background(), serviceList, &client.ListOptions{Limit: 1}); err != nil {
+			return fmt.Errorf("failed to list services: %w", err)
+		}
+
+		// Check if we can list endpoint slices (required for validation)
+		endpointSliceList := &discoveryv1.EndpointSliceList{}
+		if err := mgr.GetClient().List(context.Background(), endpointSliceList, &client.ListOptions{Limit: 1}); err != nil {
+			return fmt.Errorf("failed to list endpoint slices: %w", err)
+		}
+
+		// Check if we can list pods (required for validation)
+		podList := &corev1.PodList{}
+		if err := mgr.GetClient().List(context.Background(), podList, &client.ListOptions{Limit: 1}); err != nil {
+			return fmt.Errorf("failed to list pods: %w", err)
+		}
+
+		return nil
+	}); err != nil {
 		setupLog.Error(err, "unable to setup ready check")
 		os.Exit(1)
 	}

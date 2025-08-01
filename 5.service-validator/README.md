@@ -179,3 +179,105 @@ A: The controller uses event filtering to optimize performance and reduce unnece
 - Our annotations (`service-validator/status`) are deleted with the service
 - Any events we created are garbage collected by Kubernetes
 - No manual cleanup is required, reducing controller complexity and improving performance
+
+**Q: Why did we improve the readiness probe from a simple ping to actual resource checks?**
+
+A: The original `healthz.Ping` check only verified the HTTP server was running, but didn't ensure the controller could actually perform its validation work. We implemented three specific checks that verify the controller's core functionality.
+
+**Q: What are the three readiness checks and why are they important?**
+
+A: We implemented three readiness checks that verify the controller can access the resources it needs:
+
+1. **Services Check** - Basic connectivity & permissions:
+   ```go
+   serviceList := &corev1.ServiceList{}
+   if err := mgr.GetClient().List(context.Background(), serviceList, &client.ListOptions{Limit: 1}); err != nil {
+       return fmt.Errorf("failed to list services: %w", err)
+   }
+   ```
+
+2. **EndpointSlices Check** - Core functionality dependency:
+   ```go
+   endpointSliceList := &discoveryv1.EndpointSliceList{}
+   if err := mgr.GetClient().List(context.Background(), endpointSliceList, &client.ListOptions{Limit: 1}); err != nil {
+       return fmt.Errorf("failed to list endpoint slices: %w", err)
+   }
+   ```
+
+3. **Pods Check** - Validation logic dependency:
+   ```go
+   podList := &corev1.PodList{}
+   if err := mgr.GetClient().List(context.Background(), podList, &client.ListOptions{Limit: 1}); err != nil {
+       return fmt.Errorf("failed to list pods: %w", err)
+   }
+   ```
+
+**Q: What real-world scenarios would cause these readiness checks to fail?**
+
+A: Here are common failure scenarios engineers face:
+
+**Services Check Failures:**
+- **RBAC Issues**: Service account missing `services.list` permission
+- **Network Connectivity**: Controller can't reach Kubernetes API server
+- **API Server Issues**: API server overloaded or temporarily unavailable
+- **Authentication Problems**: Service account token expired or invalid
+
+**EndpointSlices Check Failures:**
+- **Missing RBAC**: Service account lacks `endpointslices.discovery.k8s.io` permissions
+- **API Version Issues**: EndpointSlices API not available in older clusters
+- **Discovery API Problems**: The discovery.k8s.io API group having issues
+- **Resource Quotas**: Cluster exhausted API request quotas
+
+**Pods Check Failures:**
+- **RBAC Permissions**: Missing `pods.list` permission in service account
+- **Namespace Access**: Controller can't access pods in target namespaces
+- **Resource Pressure**: API server throttling pod list requests
+- **Network Segmentation**: Controller blocked by network policies
+
+**Q: Why is this better than a simple ping check?**
+
+A: The improved readiness check provides several engineering benefits:
+
+1. **Early Detection**: Instead of controller appearing "ready" but failing silently, you immediately know there's a problem
+2. **Proper Load Balancer Behavior**: Kubernetes won't send traffic to a pod that's not truly ready
+3. **Debugging**: Specific error messages tell you exactly what's wrong (RBAC, network, API server, etc.)
+4. **Operational Excellence**: Prevents "works on my machine" issues where controller seems fine but can't actually do its job
+
+**Q: Can you give examples of real-world RBAC misconfigurations that would be caught?**
+
+A: Here are common RBAC scenarios:
+
+**Missing EndpointSlices Permission:**
+```yaml
+# Incomplete RBAC - will cause readiness failure
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: service-validator-role
+rules:
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+# Missing: endpointslices.discovery.k8s.io and pods permissions
+```
+
+**Network Policy Blocking Access:**
+```yaml
+# Network policy that blocks pod access
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: restrict-pod-access
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: trusted-namespace
+    # Controller namespace not in trusted-namespace
+```
+
+**Result**: Controller can list services but fails pod validation, readiness probe fails until network policy is fixed.
