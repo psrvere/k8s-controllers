@@ -430,6 +430,10 @@ func (r *NodeBalancerReconciler) findBestTargetNode(underutilizedNodes []NodeRes
 	var bestNode *NodeResourceUsage
 	var bestScore float64
 
+	// Iterate through underutilized nodes to find the best target for this pod
+	// Note: We use a pointer to node (&underutilizedNodes[i]) so that when we update
+	// the node's resource usage after placing a pod, the changes are reflected in the
+	// original slice for subsequent iterations. This prevents overloading the same node.
 	for i := range underutilizedNodes {
 		node := &underutilizedNodes[i]
 

@@ -353,3 +353,116 @@ Total requested: 4000m (100% of node capacity)
 - This tells us if a node is "overcommitted" from a scheduling perspective
 - Millicores represent **scheduled CPU time allocation**, not physical CPU division
 
+### Q: How do production-grade node balancers sort pods for eviction?
+A: Production-grade node balancers use sophisticated multi-criteria scoring systems, unlike our simple resource-based sorting. Here's what real-world systems consider:
+
+**Multi-Criteria Scoring**:
+Instead of just resource requests, production systems use:
+- **Resource utilization** (actual CPU/memory usage from metrics)
+- **Pod age** (prefer evicting newer pods)
+- **Pod priority** (respect PriorityClass)
+- **Pod disruption budget** (avoid violating PDBs)
+- **Application criticality** (business importance)
+- **Network locality** (prefer keeping pods close to data)
+
+**Advanced Heuristics**:
+- **Pod Affinity/Anti-affinity**: Avoid evicting pods that need to stay together
+- **Network and Storage**: Consider data locality and network bandwidth
+- **Application Patterns**: Stateful apps are harder to evict than stateless
+- **Business Logic**: Cost optimization, compliance requirements
+
+**Production Example** (pseudo-code):
+```go
+type PodScore struct {
+    Pod *corev1.Pod
+    Score float64
+    Factors map[string]float64
+}
+
+func calculatePodEvictionScore(pod *corev1.Pod, metrics *PodMetrics) PodScore {
+    score := 0.0
+    
+    // Resource factors (40% weight)
+    cpuUtilization := metrics.CPUUsage / pod.Spec.Containers[0].Resources.Requests.CPU
+    memoryUtilization := metrics.MemoryUsage / pod.Spec.Containers[0].Resources.Requests.Memory
+    score += (cpuUtilization + memoryUtilization) * 0.4
+    
+    // Age factor (20% weight) - prefer evicting newer pods
+    podAge := time.Since(pod.CreationTimestamp.Time)
+    ageScore := math.Min(podAge.Hours()/24, 7) / 7 // 0-1 scale
+    score += ageScore * 0.2
+    
+    // Priority factor (30% weight) - prefer evicting lower priority
+    priorityScore := float64(pod.Spec.Priority) / 1000000
+    score += priorityScore * 0.3
+    
+    // Business criticality (10% weight)
+    if hasCriticalLabel(pod) {
+        score -= 0.1
+    }
+    
+    return PodScore{Pod: pod, Score: score}
+}
+```
+
+**Safety Mechanisms**:
+- **Circuit breakers**: Stop evictions if cluster becomes unstable
+- **Rate limiting**: Avoid overwhelming the scheduler
+- **Rollback mechanisms**: Revert if issues detected
+- **Validation**: Verify pods can be rescheduled before evicting
+
+**Our Simple Approach vs Production**:
+```go
+// Our simple sorting
+func sortPodsByResourceUsage(pods []corev1.Pod) {
+    // Just sort by total resource requests
+}
+
+// Production approach
+func sortPodsForEviction(pods []*corev1.Pod, clusterState *ClusterState) []*ScoredPod {
+    var scoredPods []*ScoredPod
+    
+    for _, pod := range pods {
+        if isEvictable(pod) {
+            score := calculateMultiFactorScore(pod, clusterState)
+            scoredPods = append(scoredPods, &ScoredPod{
+                Pod: pod,
+                Score: score,
+                Factors: score.Factors,
+            })
+        }
+    }
+    
+    return sortByScore(scoredPods)
+}
+```
+
+**Real-World Examples**:
+- **Kubernetes Descheduler**: Uses sophisticated scoring with multiple factors
+- **Google's Borg**: Considers job type, historical performance, resource patterns
+- **AWS Cluster Autoscaler**: Factors in cost optimization and spot instance availability
+
+**Key Differences**:
+1. **Multi-dimensional scoring** vs single resource metric
+2. **Business logic integration** vs pure technical metrics
+3. **Safety mechanisms** vs simple eviction
+4. **Historical data** vs current state only
+5. **Machine learning** in advanced systems vs rule-based logic
+
+Production systems make **intelligent eviction decisions** that balance technical requirements with business needs, safety, and cost optimization.
+
+### Q: Why does the node balancer use pointers to slice elements instead of returning updated data?
+A: The `findBestTargetNode` function uses pointers to slice elements (`&underutilizedNodes[i]`) to maintain state across iterations. This design choice allows the function to update node resource usage after placing a pod, ensuring subsequent iterations see the updated values.
+
+**Why this approach**:
+- **State maintenance**: Updates are reflected in the original slice for subsequent iterations
+- **Prevents overloading**: Avoids placing multiple pods on the same node
+- **Simplicity**: Direct mutation without complex return value handling
+
+**Alternative approaches considered**:
+- **Return updated slice**: More idiomatic Go but requires caller to handle state
+- **Use separate tracking map**: More complex but separates concerns
+- **Recalculate each time**: Immutable but expensive performance cost
+
+**Trade-off**: The pointer approach prioritizes simplicity and performance over immutability, which is acceptable for this internal controller logic where the caller expects the slice to be modified.
+
