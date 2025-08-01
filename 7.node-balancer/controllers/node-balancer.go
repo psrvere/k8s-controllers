@@ -48,11 +48,11 @@ const (
 	RequeueInterval = 30 * time.Second
 )
 
-// NodeResourceUsage represents the resource usage of a node
+// NodeResourceUsage represents the resource allocation of a node
 type NodeResourceUsage struct {
 	NodeName        string
-	CPUUsage        float64 // Percentage
-	MemoryUsage     float64 // Percentage
+	CPURequests     float64 // Percentage of allocatable CPU requested
+	MemoryRequests  float64 // Percentage of allocatable memory requested
 	IsOverloaded    bool
 	IsUnderutilized bool
 	Pods            []corev1.Pod
@@ -136,23 +136,23 @@ func (r *NodeBalancerReconciler) analyzeNodeResourceUsage(ctx context.Context, n
 			NodeName: node.Name,
 		}
 
-		// Calculate CPU usage
-		cpuUsage, err := r.calculateCPUUsage(&node)
+		// Calculate CPU requests (scheduled allocation, not actual usage)
+		cpuRequests, err := r.calculateCPURequests(&node)
 		if err != nil {
-			return nil, fmt.Errorf("failed to calculate CPU usage for node %s: %w", node.Name, err)
+			return nil, fmt.Errorf("failed to calculate CPU requests for node %s: %w", node.Name, err)
 		}
-		usage.CPUUsage = cpuUsage
+		usage.CPURequests = cpuRequests
 
-		// Calculate memory usage
-		memoryUsage, err := r.calculateMemoryUsage(&node)
+		// Calculate memory requests (scheduled allocation, not actual usage)
+		memoryRequests, err := r.calculateMemoryRequests(&node)
 		if err != nil {
-			return nil, fmt.Errorf("failed to calculate memory usage for node %s: %w", node.Name, err)
+			return nil, fmt.Errorf("failed to calculate memory requests for node %s: %w", node.Name, err)
 		}
-		usage.MemoryUsage = memoryUsage
+		usage.MemoryRequests = memoryRequests
 
 		// Determine if node is overloaded or underutilized
-		usage.IsOverloaded = usage.CPUUsage > CPUThresholdHigh || usage.MemoryUsage > MemoryThresholdHigh
-		usage.IsUnderutilized = usage.CPUUsage < CPUThresholdLow && usage.MemoryUsage < MemoryThresholdLow
+		usage.IsOverloaded = usage.CPURequests > CPUThresholdHigh || usage.MemoryRequests > MemoryThresholdHigh
+		usage.IsUnderutilized = usage.CPURequests < CPUThresholdLow && usage.MemoryRequests < MemoryThresholdLow
 
 		// Get pods on this node
 		pods, err := r.getPodsOnNode(ctx, node.Name)
@@ -167,14 +167,14 @@ func (r *NodeBalancerReconciler) analyzeNodeResourceUsage(ctx context.Context, n
 	return nodeUsages, nil
 }
 
-func (r *NodeBalancerReconciler) calculateCPUUsage(node *corev1.Node) (float64, error) {
-	// Get node capacity
+func (r *NodeBalancerReconciler) calculateCPURequests(node *corev1.Node) (float64, error) {
+	// Get node capacity (total CPU available on the node)
 	cpuCapacity := node.Status.Capacity[corev1.ResourceCPU]
 	if cpuCapacity.IsZero() {
 		return 0, nil
 	}
 
-	// Get node allocatable
+	// Get node allocatable (CPU available for Pod scheduling)
 	cpuAllocatable := node.Status.Allocatable[corev1.ResourceCPU]
 	if cpuAllocatable.IsZero() {
 		return 0, nil
@@ -186,7 +186,8 @@ func (r *NodeBalancerReconciler) calculateCPUUsage(node *corev1.Node) (float64, 
 		return 0, err
 	}
 
-	// Calculate total CPU requests
+	// Calculate total CPU requests from all containers on this node
+	// This represents the CPU that Pods have reserved, not actual usage
 	var totalCPURequests int64
 	for _, pod := range pods {
 		for _, container := range pod.Spec.Containers {
@@ -197,19 +198,20 @@ func (r *NodeBalancerReconciler) calculateCPUUsage(node *corev1.Node) (float64, 
 		}
 	}
 
-	// Calculate usage percentage
+	// Calculate percentage of allocatable CPU that has been requested
+	// This gives us the "scheduled CPU allocation" on the node
 	usagePercentage := float64(totalCPURequests) / float64(cpuAllocatable.MilliValue()) * 100
 	return math.Min(usagePercentage, 100.0), nil
 }
 
-func (r *NodeBalancerReconciler) calculateMemoryUsage(node *corev1.Node) (float64, error) {
-	// Get node capacity
+func (r *NodeBalancerReconciler) calculateMemoryRequests(node *corev1.Node) (float64, error) {
+	// Get node capacity (total memory available on the node)
 	memoryCapacity := node.Status.Capacity[corev1.ResourceMemory]
 	if memoryCapacity.IsZero() {
 		return 0, nil
 	}
 
-	// Get node allocatable
+	// Get node allocatable (memory available for Pod scheduling)
 	memoryAllocatable := node.Status.Allocatable[corev1.ResourceMemory]
 	if memoryAllocatable.IsZero() {
 		return 0, nil
@@ -221,7 +223,8 @@ func (r *NodeBalancerReconciler) calculateMemoryUsage(node *corev1.Node) (float6
 		return 0, err
 	}
 
-	// Calculate total memory requests
+	// Calculate total memory requests from all containers on this node
+	// This represents the memory that Pods have reserved, not actual usage
 	var totalMemoryRequests int64
 	for _, pod := range pods {
 		for _, container := range pod.Spec.Containers {
@@ -232,7 +235,8 @@ func (r *NodeBalancerReconciler) calculateMemoryUsage(node *corev1.Node) (float6
 		}
 	}
 
-	// Calculate usage percentage
+	// Calculate percentage of allocatable memory that has been requested
+	// This gives us the "scheduled memory allocation" on the node
 	usagePercentage := float64(totalMemoryRequests) / float64(memoryAllocatable.Value()) * 100
 	return math.Min(usagePercentage, 100.0), nil
 }
@@ -312,8 +316,8 @@ func (r *NodeBalancerReconciler) performRebalancing(ctx context.Context, overloa
 	for _, overloadedNode := range overloadedNodes {
 		log.Info("Processing overloaded node",
 			"node", overloadedNode.NodeName,
-			"cpuUsage", fmt.Sprintf("%.2f%%", overloadedNode.CPUUsage),
-			"memoryUsage", fmt.Sprintf("%.2f%%", overloadedNode.MemoryUsage))
+			"cpuRequests", fmt.Sprintf("%.2f%%", overloadedNode.CPURequests),
+			"memoryRequests", fmt.Sprintf("%.2f%%", overloadedNode.MemoryRequests))
 
 		// Get evictable pods from overloaded node
 		evictablePods := getEvictablePods(overloadedNode.Pods)
@@ -351,8 +355,8 @@ func (r *NodeBalancerReconciler) performRebalancing(ctx context.Context, overloa
 				"toNode", targetNode.NodeName)
 
 			// Update target node usage (simplified - in reality would recalculate)
-			targetNode.CPUUsage += getPodCPURequest(&pod)
-			targetNode.MemoryUsage += getPodMemoryRequest(&pod)
+			targetNode.CPURequests += getPodCPURequest(&pod)
+			targetNode.MemoryRequests += getPodMemoryRequest(&pod)
 
 			// Check if target node is no longer underutilized
 			if !targetNode.IsUnderutilized {
@@ -434,11 +438,11 @@ func (r *NodeBalancerReconciler) findBestTargetNode(underutilizedNodes []NodeRes
 		podMemory := getPodMemoryRequest(pod)
 
 		// Simple scoring: prefer nodes that will remain underutilized after placement
-		newCPUUsage := node.CPUUsage + podCPU
-		newMemoryUsage := node.MemoryUsage + podMemory
+		newCPURequests := node.CPURequests + podCPU
+		newMemoryRequests := node.MemoryRequests + podMemory
 
 		// Score based on how well the pod fits (lower score is better)
-		score := newCPUUsage + newMemoryUsage
+		score := newCPURequests + newMemoryRequests
 
 		if bestNode == nil || score < bestScore {
 			bestNode = node
