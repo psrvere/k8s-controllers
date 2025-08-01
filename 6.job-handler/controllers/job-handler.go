@@ -84,29 +84,29 @@ func (r *JobHandlerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Job not found, probably deleted
-			log.Info("Job not found. Skipping reconciliation", "job", req.Name, "namespace", req.Namespace)
+			log.Info("Job not found. Skipping reconciliation")
 			return ctrl.Result{}, nil
 		}
 		// Error reading the object
-		log.Error(err, "Failed to get Job", "job", req.Name, "namespace", req.Namespace)
+		log.Error(err, "Failed to get Job")
 		return ctrl.Result{}, err
 	}
 
 	// Check if this Job should be handled
 	if !shouldHandleJob(job) {
-		log.Info("Job doesn't have handler label, skipping", "job", job.Name, "namespace", job.Namespace)
+		log.Info("Job doesn't have handler label, skipping")
 		return ctrl.Result{}, nil
 	}
 
 	// Check if job is already processed
 	if isJobAlreadyProcessed(job) {
-		log.Info("Job already processed, skipping", "job", job.Name, "namespace", job.Namespace)
+		log.Info("Job already processed, skipping")
 		return ctrl.Result{}, nil
 	}
 
 	// Check if job is completed (either success or failure)
 	if !isJobCompleted(job) {
-		log.Info("Job not completed yet, requeuing", "job", job.Name, "namespace", job.Namespace)
+		log.Info("Job not completed yet, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
@@ -116,31 +116,25 @@ func (r *JobHandlerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Update job with processing results BEFORE deleting it
 	updated, err := r.updateJobProcessingStatus(ctx, job, result)
 	if err != nil {
-		log.Error(err, "Failed to update job processing status", "job", job.Name, "namespace", job.Namespace)
+		log.Error(err, "Failed to update job processing status")
 		return ctrl.Result{}, err
 	}
 
 	if updated {
 		if result.IsCompleted {
-			log.Info("Job processing completed successfully",
-				"job", job.Name,
-				"namespace", job.Namespace,
-				"configMap", result.ConfigMapName)
+			log.Info("Job processing completed successfully", "configMap", result.ConfigMapName)
 
 			// Delete the job after successful processing and status update
 			if result.ShouldDelete {
 				err = r.deleteJob(ctx, job)
 				if err != nil {
-					log.Error(err, "Failed to delete job after processing", "job", job.Name, "namespace", job.Namespace)
+					log.Error(err, "Failed to delete job after processing")
 					return ctrl.Result{}, err
 				}
-				log.Info("Job deleted after successful processing", "job", job.Name, "namespace", job.Namespace)
+				log.Info("Job deleted after successful processing")
 			}
 		} else {
-			log.Info("Job processing failed",
-				"job", job.Name,
-				"namespace", job.Namespace,
-				"error", result.Error())
+			log.Info("Job processing failed", "error", result.Error())
 		}
 	}
 
@@ -434,18 +428,11 @@ func (r *JobHandlerReconciler) createProcessingEvent(ctx context.Context, job *b
 
 	err = r.Create(ctx, event)
 	if err != nil {
-		log.Error(err, "Failed to create processing event",
-			"job", job.Name,
-			"namespace", job.Namespace,
-			"eventName", eventName)
+		log.Error(err, "Failed to create processing event", "eventName", eventName)
 		return err
 	}
 
-	log.Info("Created processing event",
-		"job", job.Name,
-		"namespace", job.Namespace,
-		"eventName", eventName,
-		"message", message)
+	log.Info("Created processing event", "eventName", eventName, "message", message)
 	return nil
 }
 
@@ -455,10 +442,7 @@ func (r *JobHandlerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		WithEventFilter(predicate.Funcs{
 			CreateFunc: func(e event.CreateEvent) bool {
 				log := log.FromContext(context.Background())
-				log.Info("Event: Job created",
-					"name", e.Object.GetName(),
-					"namespace", e.Object.GetNamespace(),
-					"resourceVersion", e.Object.GetResourceVersion())
+				log.Info("Event: Job created", "resourceVersion", e.Object.GetResourceVersion())
 				return true
 			},
 			UpdateFunc: func(e event.UpdateEvent) bool {
@@ -481,16 +465,9 @@ func (r *JobHandlerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					}
 
 					if len(changes) > 0 {
-						log.Info("Event: Job updated",
-							"name", newJob.Name,
-							"namespace", newJob.Namespace,
-							"changes", changes,
-							"resourceVersion", newJob.GetResourceVersion())
+						log.Info("Event: Job updated", "changes", changes, "resourceVersion", newJob.GetResourceVersion())
 					} else {
-						log.Info("Event: Job updated (no significant changes)",
-							"name", newJob.Name,
-							"namespace", newJob.Namespace,
-							"resourceVersion", newJob.GetResourceVersion())
+						log.Info("Event: Job updated (no significant changes)", "resourceVersion", newJob.GetResourceVersion())
 					}
 				}
 

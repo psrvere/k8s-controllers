@@ -1473,3 +1473,106 @@ rules:
 - Move job deletion to happen **after** status update
 - Add `ShouldDelete` flag to `JobProcessingResult` to indicate when deletion is needed
 - Update job status first, then delete job if successful
+
+### Q: Why did we clean up the logging fields in the controller?
+
+**A:** We removed duplicate logging fields because controller-runtime automatically adds standard fields to all log messages, and our manual logging was adding the same fields again.
+
+**The Problem:**
+- Controller-runtime automatically adds: `controller`, `controllerGroup`, `controllerKind`, `Job`, `namespace`, `name`, `reconcileID`
+- Our code was manually adding: `job`, `namespace` (duplicates)
+- Result: Logs had redundant information like `"job": "test-job"` appearing twice
+
+**The Solution:**
+- Remove redundant `job` and `namespace` fields from our logging statements
+- Keep only unique fields like `configMap`, `error`, `eventName`, `message`
+- Let controller-runtime handle the standard job identification fields
+
+### Q: How does controller-runtime logging context work?
+
+**A:** The automatic field injection happens because of the reconciliation context, not controller-runtime itself.
+
+**The Context Matters:**
+- `log := log.FromContext(ctx)` in Reconcile method: Gets reconciliation context with metadata
+- `log := log.FromContext(context.Background())` in event filters: Gets plain context with no metadata
+
+**In Reconcile Method:**
+```go
+log := log.FromContext(ctx)  // ctx contains reconciliation request info
+```
+The `ctx` contains reconciliation metadata that controller-runtime automatically injects:
+- `controller`: "job"
+- `controllerGroup`: "batch" 
+- `controllerKind`: "Job"
+- `Job`: `{"name":"test-job","namespace":"default"}`
+- `namespace`: "default"
+- `name`: "test-job"
+- `reconcileID`: "unique-id"
+
+**In Event Filters:**
+```go
+log := log.FromContext(context.Background())  // plain context, no reconciliation data
+```
+Here we get a plain logger with no automatic fields because `context.Background()` has no reconciliation context.
+
+**Why This Happens:**
+1. **Controller-runtime** creates a context with reconciliation metadata when it calls `Reconcile`
+2. **`log.FromContext(ctx)`** extracts this metadata and adds it as log fields
+3. **`log.FromContext(context.Background())`** gets a plain logger with no metadata
+
+**The Result:**
+- Logs from `Reconcile` method: Have automatic fields + our manual fields (potential duplicates)
+- Logs from event filters: Only have our manual fields (no duplicates)
+
+### Q: Why can't we use log.FromContext(ctx) in SetupWithManager?
+
+**A:** SetupWithManager is called during application startup, not during reconciliation, so there's no reconciliation context available.
+
+**Who Calls SetupWithManager:**
+- **main.go**: The `main()` function calls `SetupWithManager(mgr)` during startup
+- **When**: During application startup, before any reconciliation happens
+- **Context**: This is a one-time setup, not a reconciliation event
+
+**The Problem:**
+```go
+// In main.go - during startup
+if err = (&controllers.JobHandlerReconciler{
+    Client: mgr.GetClient(),
+    Scheme: mgr.GetScheme(),
+}).SetupWithManager(mgr); err != nil {  // No reconciliation context here!
+    setupLog.Error(err, "unable to create controller", "controller", "JobHandler")
+    os.Exit(1)
+}
+```
+
+**Why No Reconciliation Context:**
+1. **Setup happens once** during application startup
+2. **No reconciliation is running** when SetupWithManager is called
+3. **No specific job** is being processed
+4. **No reconciliation request** exists yet
+
+**The Event Filter Functions:**
+```go
+CreateFunc: func(e event.CreateEvent) bool {
+    log := log.FromContext(context.Background())  // No reconciliation context
+    // ...
+}
+```
+
+These functions are called by controller-runtime when events happen, but they're **not part of a reconciliation cycle**. They're:
+- **Event callbacks** triggered by Kubernetes events
+- **Independent of reconciliation** - they just filter events
+- **No reconciliation context** because they're not processing a specific resource
+
+**The Flow:**
+1. **Startup**: `main()` → `SetupWithManager()` (no reconciliation context)
+2. **Runtime**: Kubernetes events → Event filters (no reconciliation context)
+3. **Runtime**: Job changes → `Reconcile()` (has reconciliation context)
+
+**Why We Use `context.Background()`:**
+- **Event filters** don't have reconciliation context
+- **Setup** doesn't have reconciliation context
+- **Only `Reconcile()`** has reconciliation context with job metadata
+
+This is why event filter logs don't have automatic fields - they're not part of a reconciliation cycle, so there's no reconciliation context to extract!
+
