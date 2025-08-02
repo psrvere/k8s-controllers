@@ -252,15 +252,15 @@ func (r *NodeBalancerReconciler) calculateMemoryRequests(node *corev1.Node) (flo
 
 func (r *NodeBalancerReconciler) getPodsOnNode(ctx context.Context, nodeName string) ([]corev1.Pod, error) {
 	podList := &corev1.PodList{}
-	err := r.List(ctx, podList, client.MatchingFields{"spec.nodeName": nodeName})
+	err := r.List(ctx, podList)
 	if err != nil {
 		return nil, err
 	}
 
-	// Filter out pods that shouldn't be evicted
+	// Filter pods by node name and evictability
 	var evictablePods []corev1.Pod
 	for _, pod := range podList.Items {
-		if isPodEvictable(&pod) {
+		if pod.Spec.NodeName == nodeName && isPodEvictable(&pod) {
 			evictablePods = append(evictablePods, pod)
 		}
 	}

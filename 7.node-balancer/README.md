@@ -668,3 +668,35 @@ if err != nil && strings.Contains(err.Error(), "PodDisruptionBudget") {
 ```
 
 The redundancy is intentional for **defense in depth** and **better performance**.
+
+### Q: Why do test nodes show as NotReady when created from YAML files?
+A: Test nodes created from YAML files show as `NotReady` because they are **virtual/mock nodes** without actual kubelet agents.
+
+**Why this happens**:
+- **No real kubelet**: Test nodes don't have actual node agents running
+- **Simulated resources**: The capacity/allocatable values are just test data
+- **No heartbeat**: Real nodes send heartbeats to the API server, test nodes don't
+- **Expected behavior**: This is normal for test scenarios
+
+**What the controller sees**:
+- **Node objects exist**: The controller can read the Node API objects
+- **Resource specifications**: The capacity/allocatable fields are populated from YAML
+- **Pod scheduling works**: Pods can be assigned via `nodeName` field
+- **Controller logic runs**: The balancing logic works with the simulated data
+
+**Example test output**:
+```bash
+kubectl get nodes -o wide
+NAME                 STATUS     ROLES           AGE     VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE                         KERNEL-VERSION    CONTAINER-RUNTIME
+node-overloaded      NotReady   <none>          4m1s              <none>        <none>        <unknown>                        <unknown>         <unknown>
+node-underutilized   NotReady   <none>          4m1s              <none>        <none>        <unknown>                        <unknown>         <unknown>
+test-control-plane   Ready      control-plane   4m53s   v1.32.2   172.18.0.2    <none>        Debian GNU/Linux 12 (bookworm)   6.12.5-linuxkit   containerd://2.0.2
+```
+
+**Why this is acceptable for testing**:
+- **Controller doesn't need real nodes**: It works with Node API objects
+- **Resource calculations work**: Uses the capacity/allocatable values from YAML
+- **Pod placement works**: Pods can be assigned to test nodes
+- **Logic validation**: Tests the controller's decision-making process
+
+The `NotReady` status doesn't affect the controller's ability to test node balancing logic.
