@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/psrvere/k8s-controllers/auto-scaler/controllers"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
@@ -57,8 +63,23 @@ func main() {
 
 	}
 
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to se4tup ready check")
+	// Custom readiness check that verifies the controller can access Kubernetes resources
+	if err := mgr.AddReadyzCheck("readyz", func(req *http.Request) error {
+		// Check if we can list deployments (basic connectivity test)
+		deploymentList := &appsv1.DeploymentList{}
+		if err := mgr.GetClient().List(context.Background(), deploymentList, &client.ListOptions{Limit: 1}); err != nil {
+			return fmt.Errorf("failed to list deployments: %w", err)
+		}
+
+		// Check if we can list pods (required for scaling operations)
+		podList := &corev1.PodList{}
+		if err := mgr.GetClient().List(context.Background(), podList, &client.ListOptions{Limit: 1}); err != nil {
+			return fmt.Errorf("failed to list pods: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		setupLog.Error(err, "unable to setup ready check")
 		os.Exit(1)
 	}
 
