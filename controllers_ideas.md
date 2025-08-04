@@ -2,11 +2,11 @@
 
 This repository contains implementations of various Kubernetes controllers addressing real-world scenarios. Below are a few problem statements:
 
-## 1. Pod Auto Scaler
-Deployment Scaler Based on Labels: Develop a controller that watches Deployments with a specific label and scales replicas up or down based on a simple threshold, like CPU usage from metrics (using fake data). This is similar to basic auto-scaling in production web services without relying on HPA.
-
-## 2. Deployment Scaler Based on Labels
+## 1. Pod Labeller
 A Kubernetes controller that automatically labels newly created Pods based on their metadata. This controller watches for Pod creation events across all namespaces (excluding system namespaces) and applies labels based on the Pod's metadata (e.g., labeling based on the app name).
+
+## 2. Pod Auto Scaler
+Deployment Scaler Based on Labels: Develop a controller that watches Deployments with a specific label and scales replicas up or down based on a simple threshold, like CPU usage from metrics (using fake data). This is similar to basic auto-scaling in production web services without relying on HPA.
 
 ## 3. ConfigMap Sync Controller
 Implement a controller that watches ConfigMaps in one namespace and synchronizes their data to ConfigMaps in another namespace. Useful in real-world multi-tenant setups where configs need to be mirrored across teams or environments.
