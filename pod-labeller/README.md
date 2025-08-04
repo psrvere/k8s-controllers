@@ -70,3 +70,22 @@ func isSystemNamespace(namespace string) bool {
 - API connectivity (can access Kubernetes API)
 - Permission verification (can list and access Pod resources)
 - Controller initialization status
+
+#### 7. **Map Copy Optimization**
+**Issue**: Manual loop for copying map entries was inefficient
+**Fix**: Used `maps.Copy()` for better performance and readability:
+```go
+// Before: Manual loop
+for key, value := range labels {
+    podCopy.Labels[key] = value
+}
+
+// After: Optimized map copy
+maps.Copy(podCopy.Labels, labels)
+```
+
+**Why this matters**: `maps.Copy()` is:
+- More efficient (optimized runtime operation)
+- More readable (clear intent)
+- Less error-prone (no manual iteration)
+- Better for concurrent access safety

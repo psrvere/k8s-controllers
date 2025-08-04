@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"maps"
 	"sync"
 	"time"
 
@@ -87,9 +88,7 @@ func (r *PodReconciler) addLabelsToPod(ctx context.Context, pod *corev1.Pod) err
 
 	// Add labels based on Pod metadata
 	labels := generateLabels(pod)
-	for key, value := range labels {
-		podCopy.Labels[key] = value
-	}
+	maps.Copy(podCopy.Labels, labels)
 
 	// Update the Pod
 	return r.Update(ctx, podCopy)
