@@ -63,3 +63,10 @@ func isSystemNamespace(namespace string) bool {
     // Skip system namespaces
 }
 ```
+
+#### 6. **Basic Readiness Check**
+**Issue**: Simple ping-based readiness check didn't verify actual controller functionality
+**Fix**: Implemented comprehensive readiness check that verifies:
+- API connectivity (can access Kubernetes API)
+- Permission verification (can list and access Pod resources)
+- Controller initialization status
