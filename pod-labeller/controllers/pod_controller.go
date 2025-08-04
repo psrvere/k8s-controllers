@@ -138,7 +138,7 @@ func isSystemNamespace(namespace string) bool {
 	return false
 }
 
-// sanitizeLabelValu converts an image name to a valid label value
+// sanitizeLabelValue converts an image name to a valid label value
 func sanitizeLabelValue(value string) string {
 	// Replace invalid characters with valid ones
 	result := ""
